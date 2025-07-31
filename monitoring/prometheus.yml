@@ -1,0 +1,58 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - "rules/*.yml"
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+          - alertmanager:9093
+
+scrape_configs:
+  # Django application metrics
+  - job_name: 'galmart-django'
+    static_configs:
+      - targets: ['web:8001']
+    metrics_path: /metrics
+    scrape_interval: 10s
+    scrape_timeout: 5s
+
+  # PostgreSQL metrics
+  - job_name: 'postgres-main'
+    static_configs:
+      - targets: ['postgres_main:5432']
+    metrics_path: /metrics
+
+  - job_name: 'postgres-analytics'
+    static_configs:
+      - targets: ['postgres_analytics:5432']
+    metrics_path: /metrics
+
+  # Redis metrics
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis:6379']
+
+  # Kafka metrics
+  - job_name: 'kafka'
+    static_configs:
+      - targets: ['kafka:9092']
+
+  # Celery metrics
+  - job_name: 'celery'
+    static_configs:
+      - targets: ['celery_worker:8002']
+
+  # Nginx metrics
+  - job_name: 'nginx'
+    static_configs:
+      - targets: ['nginx:8080']
+    metrics_path: /metrics
+
+  # Node exporter for system metrics
+  - job_name: 'node-exporter'
+    static_configs:
+      - targets: ['node-exporter:9100']

@@ -1,0 +1,278 @@
+version: '3.9'
+
+services:
+  postgres_main:
+    image: postgres:15-alpine
+    container_name: galmart_postgres_main
+    environment:
+      POSTGRES_DB: galmart_main
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: 5693
+    volumes:
+      - postgres_main_data:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    ports:
+      - "5432:5432"
+    networks:
+      - galmart_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  postgres_analytics:
+    image: postgres:15-alpine
+    container_name: galmart_postgres_analytics
+    environment:
+      POSTGRES_DB: galmart_analytics
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: 5693
+    volumes:
+      - postgres_analytics_data:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+    networks:
+      - galmart_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  redis:
+    image: redis:7-alpine
+    container_name: galmart_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - galmart_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.4.0
+    container_name: galmart_zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    networks:
+      - galmart_network
+
+  kafka:
+    image: confluentinc/cp-kafka:7.4.0
+    container_name: galmart_kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    networks:
+      - galmart_network
+    healthcheck:
+      test: ["CMD", "kafka-topics", "--bootstrap-server", "localhost:9092", "--list"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: galmart_web
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+      - static_volume:/app/staticfiles
+      - media_volume:/app/media
+    environment:
+      - DEBUG=1
+      - DATABASE_URL=postgresql://postgres:569.@postgres_main:5432/galmart_main
+      - ANALYTICS_DATABASE_URL=postgresql://postgres:5693@postgres_analytics:5432/galmart_analytics
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+    depends_on:
+      postgres_main:
+        condition: service_healthy
+      postgres_analytics:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    networks:
+      - galmart_network
+    command: >
+      sh -c "python manage.py migrate &&
+             python manage.py migrate --database=analytics &&
+             python manage.py collectstatic --noinput &&
+             python manage.py runserver 0.0.0.0:8000"
+
+  celery_worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: galmart_celery_worker
+    volumes:
+      - .:/app
+    environment:
+      - DEBUG=1
+      - DATABASE_URL=postgresql://postgres:5693@postgres_main:5432/galmart_main
+      - ANALYTICS_DATABASE_URL=postgresql://postgres:5693@postgres_analytics:5432/galmart_analytics
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+    depends_on:
+      - postgres_main
+      - postgres_analytics
+      - redis
+      - kafka
+      - web
+    networks:
+      - galmart_network
+    command: celery -A galmart worker -l info -c 4
+
+  celery_beat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: galmart_celery_beat
+    volumes:
+      - .:/app
+    environment:
+      - DEBUG=1
+      - DATABASE_URL=postgresql://postgres:5693@postgres_main:5432/galmart_main
+      - ANALYTICS_DATABASE_URL=postgresql://postgres:5693@postgres_analytics:5432/galmart_analytics
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+    depends_on:
+      - postgres_main
+      - postgres_analytics
+      - redis
+      - kafka
+      - web
+    networks:
+      - galmart_network
+    command: celery -A galmart beat -l info
+
+  celery_flower:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: galmart_celery_flower
+    ports:
+      - "5555:5555"
+    volumes:
+      - .:/app
+    environment:
+      - DEBUG=1
+      - CELERY_BROKER_URL=redis://redis:6379/0
+    depends_on:
+      - redis
+      - celery_worker
+    networks:
+      - galmart_network
+    command: celery -A galmart flower --port=5555
+
+  nginx:
+    image: nginx:1.21-alpine
+    container_name: galmart_nginx
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf
+      - static_volume:/app/staticfiles
+      - media_volume:/app/media
+    depends_on:
+      - web
+    networks:
+      - galmart_network
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: galmart_prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+    networks:
+      - galmart_network
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: galmart_grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin123
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards
+    depends_on:
+      - prometheus
+    networks:
+      - galmart_network
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: galmart_jaeger
+    ports:
+      - "16686:16686"
+      - "14268:14268"
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    networks:
+      - galmart_network
+
+  kafka_ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: galmart_kafka_ui
+    ports:
+      - "8080:8080"
+    environment:
+      - KAFKA_CLUSTERS_0_NAME=galmart
+      - KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS=kafka:29092
+    depends_on:
+      - kafka
+    networks:
+      - galmart_network
+
+volumes:
+  postgres_main_data:
+  postgres_analytics_data:
+  redis_data:
+  kafka_data:
+  static_volume:
+  media_volume:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  galmart_network:
+    driver: bridge

@@ -1,0 +1,32 @@
+# Test HTTP requests files
+/test_main.http
+
+# All python cache files
+*pyc
+__pycache__/
+
+# Project files
+.idea/
+.idea/*
+.vscode/
+
+# Virtual environment
+/.venv/
+
+# Logs
+/logs/
+
+# Compiled translations
+/locale/ru/LC_MESSAGES/messages.mo
+/locale/kk/LC_MESSAGES/messages.mo
+
+# Env files
+/docker/envs/.env
+
+# Debug tools
+/debug/
+
+# Coverage
+.coverage
+coverage.xml
+htmlcov

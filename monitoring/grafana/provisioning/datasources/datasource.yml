@@ -1,0 +1,35 @@
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: true
+
+  - name: PostgreSQL Main
+    type: postgres
+    url: postgres_main:5432
+    database: galmart_main
+    user: postgres
+    secureJsonData:
+      password: 5693
+    jsonData:
+      sslmode: disable
+      maxOpenConns: 100
+      maxIdleConns: 100
+      connMaxLifetime: 14400
+
+  - name: PostgreSQL Analytics
+    type: postgres
+    url: postgres_analytics:5432
+    database: galmart_analytics
+    user: postgres
+    secureJsonData:
+      password: 5693
+    jsonData:
+      sslmode: disable
+      maxOpenConns: 100
+      maxIdleConns: 100
+      connMaxLifetime: 14400
